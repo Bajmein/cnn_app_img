@@ -78,3 +78,7 @@ MODEL_PATH: str = "modelo/custom_cnn_scripted.pt"
 
 model_predictor: Modelo = Modelo(MODEL_PATH, device)
 prediction_api: PredictionAPI = PredictionAPI(app, model_predictor)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
