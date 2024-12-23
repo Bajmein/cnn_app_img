@@ -62,7 +62,6 @@ class PredictionAPI:
 
             try:
                 image: Image = Image.open(BytesIO(await file.read())).convert("L")
-                print(f"Dimensiones originales de la imagen (PIL): {image.size}")
 
                 prediction: str = self.model_predictor.predict(image)
                 return JSONResponse(content={"prediction": prediction})
