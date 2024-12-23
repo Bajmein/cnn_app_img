@@ -4,69 +4,77 @@ from io import BytesIO
 from PIL import Image
 import torch
 from torchvision import transforms
-
-# Inicializa la aplicación FastAPI
-app = FastAPI()
-
-# Cargar el modelo
-MODEL_PATH = "modelo/custom_cnn_scripted.pt"
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-try:
-    model = torch.jit.load(MODEL_PATH, map_location=device)
-    model.eval()
-
-except FileNotFoundError:
-    raise HTTPException(status_code=500, detail="Modelo no encontrado. Por favor, verifica la ruta.")
-
-# Transformaciones para la imagen
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),  # Redimensiona a 256x256
-    transforms.Grayscale(),  # Convierte a escala de grises
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5], std=[0.5]),
-])
+from typing import Self
 
 
-@app.get("/")
-async def root():
-    return {"message": "¡Servidor funcionando correctamente!"}
+class Modelo:
+    def __init__(self: Self, model_path: str, device_: torch.device) -> None:
+        self.device: torch.device = device_
+        self.model: torch.jit._script.RecursiveScriptModule = self.load_model(model_path)
+        self.transform: transforms.Compose = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.Grayscale(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5], std=[0.5]),
+        ])
 
+    def load_model(self: Self, model_path: str) -> torch.jit._script.RecursiveScriptModule:
+        try:
+            model: torch.jit._script.RecursiveScriptModule = torch.jit.load(model_path, map_location=self.device)
+            model.eval()
+            return model
+        except FileNotFoundError:
+            raise HTTPException(status_code=500, detail="Modelo no encontrado. Por favor, verifica la ruta.")
 
-@app.post("/predict/")
-async def predict(file: UploadFile = File(...)):
-    print(f"Nombre del archivo: {file.filename}")
-    print(f"Content Type: {file.content_type}")
+    def predict(self, image: Image.Image) -> str:
+        image: Image = self.transform(image)
+        image: Image = image.unsqueeze(0).to(self.device)
 
-    if file.content_type not in ["image/jpeg", "image/png"]:
-        raise HTTPException(status_code=400, detail="Formato de imagen no válido. Usa JPEG o PNG.")
-
-    # Leer y procesar la imagen
-    try:
-        image = Image.open(BytesIO(await file.read())).convert("L")
-        print(f"Dimensiones originales de la imagen (PIL): {image.size}")
-
-        # Aplicar transformaciones
-        image = transform(image)
-        print(f"Dimensiones después de transformaciones (PyTorch Tensor): {image.shape}")
-
-        # Agregar dimensión batch
-        image = image.unsqueeze(0).to(device)
-        print(f"Dimensiones finales del tensor (con batch): {image.shape}")
-
-        # Verificar dimensiones
         if image.shape != (1, 1, 256, 256):
             raise HTTPException(status_code=400, detail=f"Dimensiones incorrectas: {image.shape}")
 
-        # Realizar predicción
         with torch.no_grad():
-            outputs = model(image)
+            outputs: torch.Tensor = self.model(image)
             _, predicted = torch.max(outputs, 1)
 
-        # Mapeo de etiquetas (ajusta según tu modelo)
-        class_mapping = {0: "Normal", 1: "Neumonía"}
-        prediction = class_mapping.get(predicted.item(), "Desconocido")
-        return JSONResponse(content={"prediction": prediction})
+        class_mapping: dict[int, str] = {0: "Normal", 1: "Neumonía"}
+        return class_mapping.get(predicted.item(), "Desconocido")
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al procesar la imagen: {str(e)}")
+
+class PredictionAPI:
+    def __init__(self: Self, app_: FastAPI, model_predictor_: Modelo) -> None:
+        self.app: FastAPI = app_
+        self.model_predictor: Modelo = model_predictor_
+        self.setup_routes()
+
+    def setup_routes(self: Self) -> any:
+        @self.app.get("/")
+        async def root() -> dict[str, str]:
+            return {"message": "¡Servidor funcionando correctamente!"}
+
+        @self.app.post("/predict/")
+        async def predict(file: UploadFile = File(...)) -> JSONResponse:
+            print(f"Nombre del archivo: {file.filename}")
+            print(f"Content Type: {file.content_type}")
+
+            if file.content_type not in ["image/jpeg", "image/png"]:
+                raise HTTPException(status_code=400, detail="Formato de imagen no válido. Usa JPEG o PNG.")
+
+            try:
+                image: Image = Image.open(BytesIO(await file.read())).convert("L")
+                print(f"Dimensiones originales de la imagen (PIL): {image.size}")
+
+                prediction: str = self.model_predictor.predict(image)
+                return JSONResponse(content={"prediction": prediction})
+
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error al procesar la imagen: {str(e)}")
+
+
+app: FastAPI = FastAPI()
+
+device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MODEL_PATH: str = "modelo/custom_cnn_scripted.pt"
+
+model_predictor: Modelo = Modelo(MODEL_PATH, device)
+prediction_api: PredictionAPI = PredictionAPI(app, model_predictor)
